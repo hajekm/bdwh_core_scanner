@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-REPO_URL="https://github.com/mhajek/bdwh_core_scanner.git"
+REPO_URL="https://github.com/hajekm/bdwh_core_scanner.git"
 INSTALL_DIR="/opt/bdwh_core_scanner"
 BIN_PATH="/usr/local/bin/bdwh_core_scanner"
 SERVICE_NAME="bdwh_core_scanner.service"
-USER="mhajek"
+USER="hajekm"
 
 echo "=== Installing Go if missing ==="
 if ! command -v go &>/dev/null; then
@@ -19,8 +19,8 @@ sudo git clone "$REPO_URL" "$INSTALL_DIR"
 
 echo "=== Building Go project ==="
 cd "$INSTALL_DIR"
-sudo go mod tidy
-sudo CGO_ENABLED=1 GOARCH=arm64 go build -o "$BIN_PATH" .
+go mod tidy
+CGO_ENABLED=1 GOARCH=arm64 go build -o "$BIN_PATH" .
 
 echo "=== Setting executable permissions ==="
 sudo chmod +x "$BIN_PATH"
