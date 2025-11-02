@@ -152,9 +152,9 @@ func storePalletToLocation(scannerID, pallet, location uuid.UUID) {
 	maxRetries := len(retryDelays)
 
 	args := models.PalletLocation{
-		ScannerID:    scannerID,
-		PalletNo:     pallet,
-		LocationCode: location,
+		ScannerID:  scannerID,
+		PalletID:   pallet,
+		LocationID: location,
 	}
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
