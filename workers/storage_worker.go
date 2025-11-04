@@ -4,6 +4,7 @@ import (
 	"bdwh_core_scanner/api"
 	"bdwh_core_scanner/logger"
 	"bdwh_core_scanner/models"
+	"fmt"
 	"sync"
 	"time"
 
@@ -51,14 +52,15 @@ func NewPairingWorker(timeout time.Duration) *PairingWorker {
 func (w *PairingWorker) run() {
 	for input := range w.inputChan {
 		w.mu.Lock()
-		st, ok := w.state[input.ScannerID]
-		if !ok {
-			st = &ScanState{
-				LastUpdate: time.Now(),
-			}
+
+		// Get or create scanner-specific state
+		st, exists := w.state[input.ScannerID]
+		if !exists {
+			st = &ScanState{LastUpdate: time.Now()}
 			w.state[input.ScannerID] = st
 		}
 
+		// Reset timeout timer
 		w.resetTimer(input.ScannerID, st)
 
 		switch input.Type {
@@ -93,15 +95,23 @@ func (w *PairingWorker) run() {
 			)
 		}
 
+		// 🟢 Check if both are now present for this scanner
 		if st.Pallet != uuid.Nil && st.Location != uuid.Nil {
 			logger.Log.Info("assigning pallet to location",
 				zap.String("scanner_id", input.ScannerID.String()),
-				zap.String("pallet_no", st.Pallet.String()),
-				zap.String("location_code", st.Location.String()),
+				zap.String("pallet_id", st.Pallet.String()),
+				zap.String("location_id", st.Location.String()),
 			)
 
-			go storePalletToLocation(input.ScannerID, st.Pallet, st.Location)
+			go func(scannerID uuid.UUID, palletID, locationID uuid.UUID) {
+				if err := storePalletToLocation(scannerID, palletID, locationID); err != nil {
+					logger.Log.Error("failed to store pallet-location pair",
+						zap.String("scanner_id", scannerID.String()),
+						zap.Error(err))
+				}
+			}(input.ScannerID, st.Pallet, st.Location)
 
+			// Clean up after successful pairing
 			if st.Timer != nil {
 				st.Timer.Stop()
 			}
@@ -140,7 +150,7 @@ func (w *PairingWorker) AddScan(scannerID uuid.UUID, scanType ScanType, value uu
 	}
 }
 
-func storePalletToLocation(scannerID, pallet, location uuid.UUID) {
+func storePalletToLocation(scannerID, pallet, location uuid.UUID) error {
 	retryDelays := []time.Duration{
 		5 * time.Second,
 		20 * time.Second,
@@ -166,7 +176,7 @@ func storePalletToLocation(scannerID, pallet, location uuid.UUID) {
 				zap.String("location_id", location.String()),
 				zap.Int("attempt", attempt),
 			)
-			return
+			return nil
 		}
 
 		logger.Log.Warn("failed to store pallet to location",
@@ -183,7 +193,7 @@ func storePalletToLocation(scannerID, pallet, location uuid.UUID) {
 				zap.String("pallet_id", pallet.String()),
 				zap.String("location_id", location.String()),
 			)
-			return
+			return nil
 		}
 
 		delay := retryDelays[attempt-1]
@@ -194,4 +204,5 @@ func storePalletToLocation(scannerID, pallet, location uuid.UUID) {
 		)
 		time.Sleep(delay)
 	}
+	return fmt.Errorf("pallet location failed to store after %d retries", maxRetries)
 }

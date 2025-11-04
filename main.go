@@ -20,7 +20,11 @@ func main() {
 	} else {
 		baseUrl = "https://" + baseUrl + "/api/v1"
 	}
-	api.Setup(baseUrl)
+	token := os.Getenv("API_HASH")
+	if token == "" {
+		logger.Log.Fatal("API_HASH environment variable not set")
+	}
+	api.Setup(baseUrl, token)
 	logger.Log.Info("client initialized with base URL", zap.String("base_url", baseUrl))
 
 	logger.Log.Info("starting scanner manager...")

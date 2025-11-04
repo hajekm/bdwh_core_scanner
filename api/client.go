@@ -10,44 +10,45 @@ import (
 )
 
 var (
-	BaseURL string
-	client  = &http.Client{Timeout: 5 * time.Second}
+	BaseURL   string
+	client    = &http.Client{Timeout: 5 * time.Second}
+	authToken string
 )
 
-func Setup(baseURL string) {
+// Setup configures the base URL and bearer token once
+func Setup(baseURL string, token string) {
 	BaseURL = baseURL
+	authToken = token
 }
 
+// ----------- Generic request helpers -----------
+
 func Get[T any](endpoint string) (*T, error) {
-	url := BaseURL + endpoint
-	resp, err := client.Get(url)
+	req, err := newRequest("GET", endpoint, nil)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", url, err)
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GET failed [%d]: %s", resp.StatusCode, body)
-	}
-
-	var data T
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	return &data, nil
+	return doRequest[T](req)
 }
 
 func Post[T any](endpoint string, body any) (*T, error) {
-	return send[T]("POST", endpoint, body)
+	req, err := newRequest("POST", endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	return doRequest[T](req)
 }
 
 func Put[T any](endpoint string, body any) (*T, error) {
-	return send[T]("PUT", endpoint, body)
+	req, err := newRequest("PUT", endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	return doRequest[T](req)
 }
 
 func Delete(endpoint string) error {
-	req, err := http.NewRequest("DELETE", BaseURL+endpoint, nil)
+	req, err := newRequest("DELETE", endpoint, nil)
 	if err != nil {
 		return err
 	}
@@ -64,31 +65,45 @@ func Delete(endpoint string) error {
 	return nil
 }
 
-// internal send helper for POST/PUT
-func send[T any](method, endpoint string, body any) (*T, error) {
+// ----------- Internal helpers -----------
+
+func newRequest(method, endpoint string, body any) (*http.Request, error) {
 	url := BaseURL + endpoint
 
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("marshal: %w", err)
+	var buf io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshal: %w", err)
+		}
+		buf = bytes.NewBuffer(payload)
 	}
 
-	req, err := http.NewRequest(method, url, bytes.NewBuffer(payload))
+	req, err := http.NewRequest(method, url, buf)
 	if err != nil {
-		return nil, fmt.Errorf("request: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
+
 	req.Header.Set("Content-Type", "application/json")
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
 
+	return req, nil
+}
+
+func doRequest[T any](req *http.Request) (*T, error) {
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", method, url, err)
+		return nil, fmt.Errorf("%s %s: %w", req.Method, req.URL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("%s failed [%d]: %s", method, resp.StatusCode, b)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%s failed [%d]: %s", req.Method, resp.StatusCode, body)
 	}
+
 	var data T
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
