@@ -197,7 +197,7 @@ func (w *QRWorker) ProcessScans(pairing *PairingWorker) {
 					if ok {
 						l, err := api.Get[models.Location]("/locations/code/" + scan)
 						if err != nil {
-							logger.Log.Info("QR worker received invalid scan request")
+							logger.Log.Warn("QR worker received invalid scan request", zap.Error(err))
 							continue
 						}
 						pairing.AddScan(scannerID, Location, l.ID)
@@ -244,7 +244,7 @@ func (w *QRWorker) ProcessScans(pairing *PairingWorker) {
 					}
 					p, err = api.Post[models.Pallet]("/pallets", args)
 					if err != nil {
-						logger.Log.Info("QR worker received invalid scan request")
+						logger.Log.Warn("QR worker received invalid scan request", zap.Error(err))
 						continue
 					}
 					pairing.AddScan(scannerID, Pallet, p.ID)
