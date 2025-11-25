@@ -17,6 +17,7 @@ type ScanType string
 const (
 	Pallet   ScanType = "PALLET"
 	Location ScanType = "LOCATION"
+	Dispatch ScanType = "DISPATCH"
 )
 
 type ScanInput struct {
@@ -28,6 +29,7 @@ type ScanInput struct {
 type ScanState struct {
 	Pallet     uuid.UUID
 	Location   uuid.UUID
+	Dispatch   uuid.UUID
 	LastUpdate time.Time
 	Timer      *time.Timer
 }
@@ -53,14 +55,12 @@ func (w *PairingWorker) run() {
 	for input := range w.inputChan {
 		w.mu.Lock()
 
-		// Get or create scanner-specific state
 		st, exists := w.state[input.ScannerID]
 		if !exists {
 			st = &ScanState{LastUpdate: time.Now()}
 			w.state[input.ScannerID] = st
 		}
 
-		// Reset timeout timer
 		w.resetTimer(input.ScannerID, st)
 
 		switch input.Type {
@@ -80,6 +80,8 @@ func (w *PairingWorker) run() {
 			)
 
 		case Location:
+			st.Dispatch = uuid.Nil
+
 			if st.Location != uuid.Nil && st.Location != input.Value {
 				logger.Log.Info("replacing previous location with new",
 					zap.String("scanner_id", input.ScannerID.String()),
@@ -93,9 +95,25 @@ func (w *PairingWorker) run() {
 				zap.String("scanner_id", input.ScannerID.String()),
 				zap.String("location_id", input.Value.String()),
 			)
+
+		case Dispatch:
+			st.Location = uuid.Nil
+
+			if st.Dispatch != uuid.Nil && st.Dispatch != input.Value {
+				logger.Log.Info("replacing previous dispatch with new",
+					zap.String("scanner_id", input.ScannerID.String()),
+					zap.String("old_dispatch_id", st.Dispatch.String()),
+					zap.String("new_dispatch_id", input.Value.String()),
+				)
+			}
+			st.Dispatch = input.Value
+			st.LastUpdate = time.Now()
+			logger.Log.Info("dispatch scanned",
+				zap.String("scanner_id", input.ScannerID.String()),
+				zap.String("dispatch_id", input.Value.String()),
+			)
 		}
 
-		// 🟢 Check if both are now present for this scanner
 		if st.Pallet != uuid.Nil && st.Location != uuid.Nil {
 			logger.Log.Info("assigning pallet to location",
 				zap.String("scanner_id", input.ScannerID.String()),
@@ -103,7 +121,7 @@ func (w *PairingWorker) run() {
 				zap.String("location_id", st.Location.String()),
 			)
 
-			go func(scannerID uuid.UUID, palletID, locationID uuid.UUID) {
+			go func(scannerID, palletID, locationID uuid.UUID) {
 				if err := storePalletToLocation(scannerID, palletID, locationID); err != nil {
 					logger.Log.Error("failed to store pallet-location pair",
 						zap.String("scanner_id", scannerID.String()),
@@ -111,15 +129,35 @@ func (w *PairingWorker) run() {
 				}
 			}(input.ScannerID, st.Pallet, st.Location)
 
-			// Clean up after successful pairing
-			if st.Timer != nil {
-				st.Timer.Stop()
-			}
-			delete(w.state, input.ScannerID)
+			w.clearState(input.ScannerID, st)
+		} else if st.Pallet != uuid.Nil && st.Dispatch != uuid.Nil {
+			logger.Log.Info("dispatching pallet",
+				zap.String("scanner_id", input.ScannerID.String()),
+				zap.String("pallet_id", st.Pallet.String()),
+				zap.String("dispatch_id", st.Dispatch.String()),
+			)
+
+			go func(scannerID, palletID, dispatchID uuid.UUID) {
+				if err := dispatchPallet(scannerID, palletID, dispatchID); err != nil {
+					logger.Log.Error("failed to dispatch pallet",
+						zap.String("scanner_id", scannerID.String()),
+						zap.Error(err))
+				}
+			}(input.ScannerID, st.Pallet, st.Dispatch)
+
+			w.clearState(input.ScannerID, st)
 		}
 
 		w.mu.Unlock()
 	}
+}
+
+// Helper to clear state and stop timer
+func (w *PairingWorker) clearState(scannerID uuid.UUID, st *ScanState) {
+	if st.Timer != nil {
+		st.Timer.Stop()
+	}
+	delete(w.state, scannerID)
 }
 
 func (w *PairingWorker) resetTimer(scannerID uuid.UUID, st *ScanState) {
@@ -136,6 +174,7 @@ func (w *PairingWorker) resetTimer(scannerID uuid.UUID, st *ScanState) {
 				zap.String("scanner_id", scannerID.String()),
 				zap.String("pallet_no", current.Pallet.String()),
 				zap.String("location_code", current.Location.String()),
+				zap.String("dispatch_id", current.Dispatch.String()),
 			)
 			delete(w.state, scannerID)
 		}
@@ -155,9 +194,6 @@ func storePalletToLocation(scannerID, pallet, location uuid.UUID) error {
 		5 * time.Second,
 		20 * time.Second,
 		1 * time.Minute,
-		5 * time.Minute,
-		20 * time.Minute,
-		1 * time.Hour,
 	}
 	maxRetries := len(retryDelays)
 
@@ -178,31 +214,35 @@ func storePalletToLocation(scannerID, pallet, location uuid.UUID) error {
 			)
 			return nil
 		}
+		time.Sleep(retryDelays[attempt-1])
+	}
+	return fmt.Errorf("pallet location failed to store after %d retries", maxRetries)
+}
 
-		logger.Log.Warn("failed to store pallet to location",
-			zap.String("scanner_id", scannerID.String()),
-			zap.String("pallet_id", pallet.String()),
-			zap.String("location_id", location.String()),
-			zap.Int("attempt", attempt),
-			zap.Error(err),
-		)
+func dispatchPallet(scannerID, pallet, dispatch uuid.UUID) error {
+	retryDelays := []time.Duration{5 * time.Second, 20 * time.Second, 1 * time.Minute}
+	maxRetries := len(retryDelays)
 
-		if attempt == maxRetries {
-			logger.Log.Error("max retries reached, giving up on storing pallet",
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		_, err := api.Put[any](fmt.Sprintf("/pallets/shipped/%s", pallet), "")
+		if err == nil {
+			logger.Log.Info("successfully dispatched pallet",
 				zap.String("scanner_id", scannerID.String()),
 				zap.String("pallet_id", pallet.String()),
-				zap.String("location_id", location.String()),
+				zap.String("dispatch_id", dispatch.String()),
 			)
 			return nil
 		}
 
-		delay := retryDelays[attempt-1]
-		logger.Log.Info("retrying after delay",
+		logger.Log.Warn("failed to dispatch pallet",
 			zap.String("scanner_id", scannerID.String()),
-			zap.Duration("delay", delay),
-			zap.Int("next_attempt", attempt+1),
+			zap.Error(err),
+			zap.Int("attempt", attempt),
 		)
-		time.Sleep(delay)
+
+		if attempt < maxRetries {
+			time.Sleep(retryDelays[attempt-1])
+		}
 	}
-	return fmt.Errorf("pallet location failed to store after %d retries", maxRetries)
+	return fmt.Errorf("failed to dispatch pallet after %d retries", maxRetries)
 }

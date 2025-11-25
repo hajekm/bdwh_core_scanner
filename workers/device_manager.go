@@ -185,10 +185,10 @@ func isSameDevice(s *models.ScannerInfo, d *hid.DeviceInfo) bool {
 	if s.VendorID != d.VendorID || s.ProductID != d.ProductID {
 		return false
 	}
-	if s.Serial != "" && d.SerialNbr != "" {
-		return s.Serial == d.SerialNbr
+	if s.Serial == "" || d.SerialNbr == "" {
+		return false
 	}
-	return s.BusType == d.BusType.String()
+	return s.Serial == d.SerialNbr
 }
 
 func contains(list []string, val string) bool {
@@ -201,8 +201,13 @@ func contains(list []string, val string) bool {
 }
 
 func generateStableID(d *hid.DeviceInfo) uuid.UUID {
+	uniqueKey := d.SerialNbr
+	if uniqueKey == "" {
+		uniqueKey = d.Path
+	}
+
 	base := fmt.Sprintf("%04x:%04x:%s:%s",
-		d.VendorID, d.ProductID, d.BusType.String(), d.SerialNbr)
+		d.VendorID, d.ProductID, d.BusType.String(), uniqueKey)
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(base))
 }
 

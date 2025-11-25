@@ -38,6 +38,8 @@ func NewQRWorker(interval time.Duration) *QRWorker {
 	}
 }
 
+const DISPATCH = "!HASTA LA VISTA,BABY!I'LL BE BACK!"
+
 func (w *QRWorker) ListenForScans() {
 	logger.Log.Info("Starting QRWorker HID monitor")
 
@@ -93,13 +95,34 @@ func (w *QRWorker) ListenForScans() {
 func (w *QRWorker) listenDevice(ctx context.Context, path string) {
 	defer w.wg.Done()
 
-	dev, err := hid.OpenPath(path)
-	if err != nil {
-		logger.Log.Error("Failed to open HID device", zap.String("path", path), zap.Error(err))
-		return
-	}
-	defer dev.Close()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			dev, err := hid.OpenPath(path)
+			if err != nil {
+				logger.Log.Warn("Failed to open HID device, retrying in 2s...", zap.String("path", path), zap.Error(err))
+				select {
+				case <-time.After(2 * time.Second):
+					continue
+				case <-ctx.Done():
+					return
+				}
+			}
 
+			logger.Log.Info("HID device connected", zap.String("path", path))
+
+			w.readLoop(ctx, dev, path)
+
+			dev.Close()
+			logger.Log.Info("HID device disconnected, attempting reconnect...", zap.String("path", path))
+			time.Sleep(1 * time.Second)
+		}
+	}
+}
+
+func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string) {
 	buf := make([]byte, 8)
 	var line bytes.Buffer
 	var prevKey byte
@@ -107,49 +130,47 @@ func (w *QRWorker) listenDevice(ctx context.Context, path string) {
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Log.Info("Stopping HID listener", zap.String("path", path))
 			return
 		default:
-		}
-
-		n, err := dev.Read(buf)
-		if err != nil {
-			logger.Log.Warn("HID read error or disconnect", zap.String("path", path), zap.Error(err))
-			return
-		}
-		if n < 3 {
-			continue
-		}
-
-		mod := buf[0]
-		key := buf[2]
-		shift := mod&0x02 != 0
-
-		if key == 0 || key == prevKey {
-			prevKey = key
-			continue
-		}
-		prevKey = key
-
-		char := decodeHIDKey(key, shift)
-		if char == "" {
-			continue
-		}
-
-		if char == "\n" {
-			text := line.String()
-			line.Reset()
-			if text != "" {
-				scannerID := w.manager.FindScannerIDByPath(path)
-				select {
-				case w.scanChan <- ScanMessage{ScannerID: scannerID, Text: text}:
-					logger.Log.Info("Scanned QR", zap.String("path", path), zap.String("code", text))
-				case <-ctx.Done():
-					return
-				}
+			n, err := dev.Read(buf)
+			if err != nil {
+				logger.Log.Warn("HID read error", zap.String("path", path), zap.Error(err))
+				return
 			}
-		} else {
-			line.WriteString(char)
+			if n < 3 {
+				continue
+			}
+
+			mod := buf[0]
+			key := buf[2]
+			shift := mod&0x02 != 0
+
+			if key == 0 || key == prevKey {
+				prevKey = key
+				continue
+			}
+			prevKey = key
+
+			char := decodeHIDKey(key, shift)
+			if char == "" {
+				continue
+			}
+
+			if char == "\n" {
+				text := line.String()
+				line.Reset()
+				if text != "" {
+					scannerID := w.manager.FindScannerIDByPath(path)
+					select {
+					case w.scanChan <- ScanMessage{ScannerID: scannerID, Text: text}:
+						logger.Log.Info("Scanned QR", zap.String("path", path), zap.String("code", text))
+					case <-ctx.Done():
+						return
+					}
+				}
+			} else {
+				line.WriteString(char)
+			}
 		}
 	}
 }
@@ -189,6 +210,9 @@ func (w *QRWorker) ProcessScans(pairing *PairingWorker) {
 			if len(data) == 0 {
 				logger.Log.Info("QR worker received empty scan request")
 				continue
+			}
+			if len(data) == 1 && strings.Contains(scan, DISPATCH) {
+				pairing.AddScan(scannerID, Dispatch, uuid.New())
 			}
 			if len(data) == 1 {
 				p, err := api.Get[models.Pallet]("/pallets/code/" + data[0])
