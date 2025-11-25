@@ -88,7 +88,10 @@ func (w *QRWorker) listenDevice(ctx context.Context, path string) {
 
 			w.readLoop(ctx, dev, path)
 
-			dev.Close()
+			err = dev.Close()
+			if err != nil {
+				logger.Log.Warn("Failed to close HID device", zap.String("path", path), zap.Error(err))
+			}
 			logger.Log.Info("HID device disconnected, attempting reconnect...", zap.String("path", path))
 			time.Sleep(1 * time.Second)
 		}
