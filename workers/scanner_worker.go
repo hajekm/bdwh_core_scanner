@@ -41,57 +41,30 @@ func NewQRWorker(interval time.Duration) *QRWorker {
 const DISPATCH = "!HASTA LA VISTA,BABY!I'LL BE BACK!"
 
 func (w *QRWorker) ListenForScans() {
-	logger.Log.Info("Starting QRWorker HID monitor")
+	logger.Log.Info("Starting QRWorker with FIXED paths")
+	fixedPaths := []string{"/dev/scanner_top", "/dev/scanner_bottom"}
 
-	ticker := time.NewTicker(w.manager.interval)
-	defer ticker.Stop()
+	for _, path := range fixedPaths {
+		logger.Log.Info("Starting listener for fixed scanner", zap.String("path", path))
 
-	for {
-		select {
-		case <-ticker.C:
-			w.manager.refresh()
+		ctx, cancel := context.WithCancel(context.Background())
+		scannerID := generateIDFromPath(path)
+		w.activeScanners.Store(scannerID, cancel)
 
-			current := w.manager.GetScanners()
-			known := make(map[uuid.UUID]bool)
-
-			for _, sc := range current {
-				known[sc.ID] = true
-				if _, exists := w.activeScanners.Load(sc.ID); !exists {
-					for _, path := range sc.Paths {
-						logger.Log.Info("Starting listener for scanner", zap.String("path", path))
-						ctx, cancel := context.WithCancel(context.Background())
-						w.activeScanners.Store(sc.ID, cancel)
-						w.wg.Add(1)
-						go w.listenDevice(ctx, path)
-					}
-				}
-			}
-
-			// Stop listeners for removed scanners
-			w.activeScanners.Range(func(key, val any) bool {
-				id := key.(uuid.UUID)
-				cancel := val.(context.CancelFunc)
-				if !known[id] {
-					logger.Log.Info("Scanner removed, stopping listener", zap.String("id", id.String()))
-					cancel()
-					w.activeScanners.Delete(id)
-				}
-				return true
-			})
-
-		case <-w.quitChan:
-			logger.Log.Info("Stopping QRWorker HID monitor")
-			w.activeScanners.Range(func(_, val any) bool {
-				val.(context.CancelFunc)()
-				return true
-			})
-			w.wg.Wait()
-			return
-		}
+		w.wg.Add(1)
+		go w.listenDevice(ctx, path)
 	}
+
+	<-w.quitChan
+
+	logger.Log.Info("Stopping QRWorker HID monitor")
+	w.activeScanners.Range(func(_, val any) bool {
+		val.(context.CancelFunc)()
+		return true
+	})
+	w.wg.Wait()
 }
 
-// 🔹 Listen to one /dev/hidrawX device
 func (w *QRWorker) listenDevice(ctx context.Context, path string) {
 	defer w.wg.Done()
 
@@ -134,7 +107,7 @@ func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string) {
 		default:
 			n, err := dev.Read(buf)
 			if err != nil {
-				logger.Log.Warn("HID read error", zap.String("path", path), zap.Error(err))
+				logger.Log.Warn("HID read error (device disconnected?)", zap.String("path", path), zap.Error(err))
 				return
 			}
 			if n < 3 {
@@ -145,7 +118,11 @@ func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string) {
 			key := buf[2]
 			shift := mod&0x02 != 0
 
-			if key == 0 || key == prevKey {
+			if key == 0 || (key == prevKey && key != 0) {
+				if key == 0 {
+					prevKey = key
+					continue
+				}
 				prevKey = key
 				continue
 			}
@@ -160,7 +137,8 @@ func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string) {
 				text := line.String()
 				line.Reset()
 				if text != "" {
-					scannerID := w.manager.FindScannerIDByPath(path)
+					scannerID := generateIDFromPath(path)
+
 					select {
 					case w.scanChan <- ScanMessage{ScannerID: scannerID, Text: text}:
 						logger.Log.Info("Scanned QR", zap.String("path", path), zap.String("code", text))
@@ -293,4 +271,8 @@ func (w *QRWorker) Stop() {
 	})
 	w.wg.Wait()
 	close(w.scanChan)
+}
+
+func generateIDFromPath(path string) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(path))
 }
