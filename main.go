@@ -33,12 +33,10 @@ func main() {
 	defer manager.Stop()
 	logger.Log.Info("scanner manager started")
 
-	pairing := workers.NewPairingWorker(1 * time.Minute)
-
 	logger.Log.Info("starting qr worker...")
-	worker := workers.NewQRWorker(5 * time.Second)
+	worker := workers.NewQRWorker(manager)
 	go worker.ListenForScans()
-	go worker.ProcessScans(pairing)
+	go worker.ProcessScans()
 	defer worker.Stop()
 	logger.Log.Info("qr worker started")
 

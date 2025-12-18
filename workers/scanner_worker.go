@@ -4,11 +4,8 @@ import (
 	"bdwh_core_scanner/api"
 	"bdwh_core_scanner/logger"
 	"bdwh_core_scanner/models"
-	"bdwh_core_scanner/utils"
 	"bytes"
 	"context"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +19,12 @@ type ScanMessage struct {
 	Text      string
 }
 
+type ScanEvent struct {
+	ScannerID uuid.UUID `json:"scanner_id"`
+	Text      string    `json:"text"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 type QRWorker struct {
 	scanChan       chan ScanMessage
 	quitChan       chan struct{}
@@ -30,11 +33,11 @@ type QRWorker struct {
 	manager        *ScannerManager
 }
 
-func NewQRWorker(interval time.Duration) *QRWorker {
+func NewQRWorker(manager *ScannerManager) *QRWorker {
 	return &QRWorker{
 		scanChan: make(chan ScanMessage, 50),
 		quitChan: make(chan struct{}),
-		manager:  NewScannerManager(interval),
+		manager:  manager,
 	}
 }
 
@@ -48,11 +51,14 @@ func (w *QRWorker) ListenForScans() {
 		logger.Log.Info("Starting listener for fixed scanner", zap.String("path", path))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		scannerID := generateIDFromPath(path)
+		scannerID := w.manager.FindScannerIDByPath(path)
+		if scannerID == uuid.Nil {
+			scannerID = generateIDFromPath(path)
+		}
 		w.activeScanners.Store(scannerID, cancel)
 
 		w.wg.Add(1)
-		go w.listenDevice(ctx, path)
+		go w.listenDevice(ctx, path, scannerID)
 	}
 
 	<-w.quitChan
@@ -65,7 +71,7 @@ func (w *QRWorker) ListenForScans() {
 	w.wg.Wait()
 }
 
-func (w *QRWorker) listenDevice(ctx context.Context, path string) {
+func (w *QRWorker) listenDevice(ctx context.Context, path string, scannerID uuid.UUID) {
 	defer w.wg.Done()
 
 	for {
@@ -86,7 +92,7 @@ func (w *QRWorker) listenDevice(ctx context.Context, path string) {
 
 			logger.Log.Info("HID device connected", zap.String("path", path))
 
-			w.readLoop(ctx, dev, path)
+			w.readLoop(ctx, dev, path, scannerID)
 
 			err = dev.Close()
 			if err != nil {
@@ -98,7 +104,7 @@ func (w *QRWorker) listenDevice(ctx context.Context, path string) {
 	}
 }
 
-func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string) {
+func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string, scannerID uuid.UUID) {
 	buf := make([]byte, 8)
 	var line bytes.Buffer
 	var prevKey byte
@@ -181,79 +187,23 @@ func decodeHIDKey(code byte, shift bool) string {
 	return ""
 }
 
-func (w *QRWorker) ProcessScans(pairing *PairingWorker) {
+func (w *QRWorker) ProcessScans() {
 	for {
 		select {
 		case msg := <-w.scanChan:
-			scan := msg.Text
-			scannerID := msg.ScannerID
-			data := strings.Split(scan, "|")
-			if len(data) == 0 {
-				logger.Log.Info("QR worker received empty scan request")
-				continue
+			event := ScanEvent{
+				ScannerID: msg.ScannerID,
+				Text:      msg.Text,
+				Timestamp: time.Now(),
 			}
-			if len(data) == 1 && strings.Contains(scan, DISPATCH) {
-				pairing.AddScan(scannerID, Dispatch, uuid.New())
-			}
-			if len(data) == 1 {
-				p, err := api.Get[models.Pallet]("/pallets/code/" + data[0])
-				if err != nil {
-					ok := utils.IsValidLocationFormat(scan)
-					if ok {
-						l, err := api.Get[models.Location]("/locations/code/" + scan)
-						if err != nil {
-							logger.Log.Warn("QR worker received invalid scan request", zap.Error(err))
-							continue
-						}
-						pairing.AddScan(scannerID, Location, l.ID)
-					} else {
-						logger.Log.Warn("QR worker received invalid scan request")
-					}
-					continue
-				}
-				pairing.AddScan(scannerID, Pallet, p.ID)
+			_, err := api.Post[any]("/scans", event)
+			if err != nil {
+				logger.Log.Error("Failed to send scan to server",
+					zap.String("scanner_id", msg.ScannerID.String()),
+					zap.Error(err))
 			} else {
-				p, err := api.Get[models.Pallet]("/pallets/code/" + data[9])
-				if err == nil {
-					pairing.AddScan(scannerID, Pallet, p.ID)
-				} else {
-					bc, err := strconv.ParseInt(data[4], 10, 32)
-					if err != nil {
-						logger.Log.Info("QR worker received invalid scan request", zap.String("box_count", data[4]))
-						continue
-					}
-					ipb, err := strconv.ParseInt(data[3], 10, 32)
-					if err != nil {
-						logger.Log.Info("QR worker received invalid scan request", zap.String("items_per_box", data[3]))
-						continue
-					}
-					tc, err := strconv.ParseInt(data[5], 10, 32)
-					if err != nil {
-						logger.Log.Info("QR worker received invalid scan request", zap.String("total_count", data[5]))
-						continue
-					}
-					if bc*ipb != tc {
-						logger.Log.Warn("item counts do not match", zap.Int64("count", bc), zap.Int64("count", tc), zap.Int64("total_count", ipb), zap.Int64("items_per_box", ipb))
-					}
-					args := models.Pallet{
-						BoxCount:            int32(bc),
-						InvoiceNo:           data[0],
-						ItemsPerBox:         int32(ipb),
-						OriginShipToAddress: data[7],
-						OriginShipToCountry: data[8],
-						PalletNo:            data[9],
-						PartNo:              data[1],
-						SapNo:               data[2],
-						TotalCount:          int32(tc),
-						UnknownNo:           data[6],
-					}
-					p, err = api.Post[models.Pallet]("/pallets", args)
-					if err != nil {
-						logger.Log.Warn("QR worker received invalid scan request", zap.Error(err))
-						continue
-					}
-					pairing.AddScan(scannerID, Pallet, p.ID)
-				}
+				logger.Log.Info("Scan sent to server",
+					zap.String("scanner_id", msg.ScannerID.String()))
 			}
 		case <-w.quitChan:
 			logger.Log.Info("Stopping QR processor")
@@ -268,11 +218,6 @@ func (w *QRWorker) GetScanners() []models.ScannerInfo {
 
 func (w *QRWorker) Stop() {
 	close(w.quitChan)
-	w.activeScanners.Range(func(_, val any) bool {
-		val.(context.CancelFunc)()
-		return true
-	})
-	w.wg.Wait()
 	close(w.scanChan)
 }
 

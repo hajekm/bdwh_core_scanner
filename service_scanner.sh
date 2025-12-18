@@ -5,13 +5,7 @@ REPO_URL="https://github.com/hajekm/bdwh_core_scanner.git"
 INSTALL_DIR="/opt/bdwh_core_scanner"
 BIN_PATH="/usr/local/bin/bdwh_core_scanner"
 SERVICE_NAME="bdwh_core_scanner.service"
-USER="hajekm"
-
-echo "=== Installing Go if missing ==="
-if ! command -v go &>/dev/null; then
-  sudo apt update
-  sudo apt install -y golang-go
-fi
+USER="mhajek"
 
 echo "=== Cloning repository ==="
 sudo rm -rf "$INSTALL_DIR"
