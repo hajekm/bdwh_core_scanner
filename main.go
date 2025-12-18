@@ -16,9 +16,9 @@ var baseUrl = ""
 func main() {
 	baseUrl = os.Getenv("BASE_URL")
 	if baseUrl == "" {
-		baseUrl = "http://192.168.0.201:8082/api/v1"
+		baseUrl = "http://192.168.0.156:8082/api/v1"
 	} else {
-		baseUrl = "https://" + baseUrl + "/api/v1"
+		baseUrl = baseUrl + "/api/v1"
 	}
 	token := os.Getenv("API_HASH")
 	if token == "" {
