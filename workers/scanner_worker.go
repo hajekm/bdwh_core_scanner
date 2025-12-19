@@ -6,6 +6,7 @@ import (
 	"bdwh_core_scanner/models"
 	"bytes"
 	"context"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -49,8 +50,14 @@ func (w *QRWorker) ListenForScans() {
 		logger.Log.Info("Starting listener for fixed scanner", zap.String("path", path))
 
 		ctx, cancel := context.WithCancel(context.Background())
-		scannerID := w.manager.FindScannerIDByPath(path)
+		realPath, err := filepath.EvalSymlinks(path)
+		var scannerID uuid.UUID
+
+		if err == nil {
+			scannerID = w.manager.FindScannerIDByPath(realPath)
+		}
 		if scannerID == uuid.Nil {
+			logger.Log.Warn("Could not determine ID for path (manager has no record yet)", zap.String("path", path))
 			scannerID = generateIDFromPath(path)
 		}
 		w.activeScanners.Store(scannerID, cancel)
@@ -117,12 +124,6 @@ func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string, s
 				logger.Log.Warn("HID read error (device disconnected?)", zap.String("path", path), zap.Error(err))
 				return
 			}
-			if n > 0 && buf[2] != 0 {
-				logger.Log.Info("RAW HID DATA",
-					zap.String("path", path),
-					zap.Int("bytes_read", n),
-					zap.Any("hex", buf[:n])) // Log the raw hex array
-			}
 			if n < 3 {
 				continue
 			}
@@ -150,8 +151,6 @@ func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string, s
 				text := line.String()
 				line.Reset()
 				if text != "" {
-					scannerID := generateIDFromPath(path)
-
 					select {
 					case w.scanChan <- ScanMessage{ScannerID: scannerID, Text: text}:
 						logger.Log.Info("Scanned QR", zap.String("path", path), zap.String("code", text))
