@@ -172,6 +172,7 @@ func addOrAppendDevice(list *[]models.ScannerInfo, d *hid.DeviceInfo) {
 
 	*list = append(*list, models.ScannerInfo{
 		ID:          generateStableID(d),
+		Alias:       getAlias(d.Path),
 		VendorID:    d.VendorID,
 		ProductID:   d.ProductID,
 		BusType:     d.BusType.String(),
@@ -241,4 +242,16 @@ func isLikelyScanner(d *hid.DeviceInfo) bool {
 	}
 
 	return false
+}
+
+func getAlias(path string) string {
+	path = strings.ToLower(path)
+	if strings.Contains(path, "top") {
+		return "Scanner 1"
+	}
+	if strings.Contains(path, "bottom") {
+		return "Scanner 2"
+	}
+	return "Scanner X"
+
 }
