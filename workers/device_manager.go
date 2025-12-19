@@ -5,6 +5,7 @@ import (
 	"bdwh_core_scanner/logger"
 	"bdwh_core_scanner/models"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -70,10 +71,14 @@ func (m *ScannerManager) refresh() {
 		}
 	}()
 
+	topTarget, _ := filepath.EvalSymlinks("/dev/scanner_top")
+	bottomTarget, _ := filepath.EvalSymlinks("/dev/scanner_bottom")
+
 	var devices []models.ScannerInfo
 	err := hid.Enumerate(0, 0, func(info *hid.DeviceInfo) error {
 		if isLikelyScanner(info) {
-			addOrAppendDevice(&devices, info)
+			alias := determineAlias(info.Path, topTarget, bottomTarget)
+			addOrAppendDevice(&devices, info, alias)
 		}
 		return nil
 	})
@@ -159,12 +164,15 @@ func (m *ScannerManager) syncWithAPI() {
 	}
 }
 
-func addOrAppendDevice(list *[]models.ScannerInfo, d *hid.DeviceInfo) {
+func addOrAppendDevice(list *[]models.ScannerInfo, d *hid.DeviceInfo, alias string) {
 	for i := range *list {
 		s := &(*list)[i]
 		if isSameDevice(s, d) {
 			if !contains(s.Paths, d.Path) {
 				s.Paths = append(s.Paths, d.Path)
+			}
+			if s.Alias == "Scanner X" && alias != "Scanner X" {
+				s.Alias = alias
 			}
 			return
 		}
@@ -172,7 +180,7 @@ func addOrAppendDevice(list *[]models.ScannerInfo, d *hid.DeviceInfo) {
 
 	*list = append(*list, models.ScannerInfo{
 		ID:          generateStableID(d),
-		Alias:       getAlias(d.Path),
+		Alias:       alias,
 		VendorID:    d.VendorID,
 		ProductID:   d.ProductID,
 		BusType:     d.BusType.String(),
@@ -244,14 +252,12 @@ func isLikelyScanner(d *hid.DeviceInfo) bool {
 	return false
 }
 
-func getAlias(path string) string {
-	path = strings.ToLower(path)
-	if strings.Contains(path, "top") {
+func determineAlias(currentPath, topTarget, bottomTarget string) string {
+	if topTarget != "" && currentPath == topTarget {
 		return "Scanner 1"
 	}
-	if strings.Contains(path, "bottom") {
+	if bottomTarget != "" && currentPath == bottomTarget {
 		return "Scanner 2"
 	}
 	return "Scanner X"
-
 }

@@ -41,8 +41,6 @@ func NewQRWorker(manager *ScannerManager) *QRWorker {
 	}
 }
 
-const DISPATCH = "!HASTA LA VISTA,BABY!I'LL BE BACK!"
-
 func (w *QRWorker) ListenForScans() {
 	logger.Log.Info("Starting QRWorker with FIXED paths")
 	fixedPaths := []string{"/dev/scanner_top", "/dev/scanner_bottom"}
