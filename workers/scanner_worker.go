@@ -103,7 +103,7 @@ func (w *QRWorker) listenDevice(ctx context.Context, path string, scannerID uuid
 }
 
 func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string, scannerID uuid.UUID) {
-	buf := make([]byte, 8)
+	buf := make([]byte, 16)
 	var line bytes.Buffer
 	var prevKey byte
 
@@ -116,6 +116,12 @@ func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string, s
 			if err != nil {
 				logger.Log.Warn("HID read error (device disconnected?)", zap.String("path", path), zap.Error(err))
 				return
+			}
+			if n > 0 && buf[2] != 0 {
+				logger.Log.Info("RAW HID DATA",
+					zap.String("path", path),
+					zap.Int("bytes_read", n),
+					zap.Any("hex", buf[:n])) // Log the raw hex array
 			}
 			if n < 3 {
 				continue
