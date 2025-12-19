@@ -76,7 +76,7 @@ func (w *QRWorker) ListenForScans() {
 	w.wg.Wait()
 }
 
-func (w *QRWorker) listenDevice(ctx context.Context, path string, scannerID uuid.UUID) {
+func (w *QRWorker) listenDevice(ctx context.Context, path string, initID uuid.UUID) {
 	defer w.wg.Done()
 
 	for {
@@ -96,7 +96,23 @@ func (w *QRWorker) listenDevice(ctx context.Context, path string, scannerID uuid
 			}
 
 			logger.Log.Info("HID device connected", zap.String("path", path))
+			scannerID := initID
+			realPath, _ := filepath.EvalSymlinks(path)
 
+			for i := 0; i < 50; i++ {
+				foundID := w.manager.FindScannerIDByPath(realPath)
+				if foundID != uuid.Nil {
+					scannerID = foundID
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			if scannerID == uuid.Nil {
+				logger.Log.Error("Manager still doesn't know this device! Scans might be rejected.", zap.String("path", path), zap.String("real_path", realPath))
+			} else {
+				logger.Log.Info("Scanner identified successfully", zap.String("path", path), zap.String("id", scannerID.String()))
+			}
 			w.readLoop(ctx, dev, path, scannerID)
 
 			err = dev.Close()

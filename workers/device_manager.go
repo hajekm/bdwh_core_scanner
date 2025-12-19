@@ -47,6 +47,7 @@ func (m *ScannerManager) Stop() {
 }
 
 func (m *ScannerManager) worker() {
+	m.refresh()
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 
