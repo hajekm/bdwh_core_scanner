@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -137,7 +138,13 @@ func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string, s
 		default:
 			n, err := dev.ReadWithTimeout(buf, 1000)
 			if err != nil {
-				if n == 0 && err != nil {
+				errMsg := err.Error()
+
+				if strings.Contains(errMsg, "Interrupted system call") {
+					continue
+				}
+
+				if errMsg == "timeout" || errMsg == "HID API error: timeout" {
 					continue
 				}
 
