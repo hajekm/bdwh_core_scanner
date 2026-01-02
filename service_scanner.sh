@@ -34,7 +34,7 @@ Group=input
 ExecStart=$BIN_PATH
 WorkingDirectory=$INSTALL_DIR
 Restart=always
-RestartSec=5
+RestartSec=10s
 
 # Give access to /dev/hidraw devices
 AmbientCapabilities=CAP_SYS_RAWIO

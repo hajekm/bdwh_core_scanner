@@ -34,6 +34,12 @@ func (m *ScannerManager) Start() {
 	if m.isRunning {
 		return
 	}
+
+	if err := hid.Init(); err != nil {
+		logger.Log.Error("CRITICAL: Failed to initialize HID subsystem", zap.Error(err))
+		return
+	}
+
 	m.isRunning = true
 	go m.worker()
 }
@@ -44,6 +50,10 @@ func (m *ScannerManager) Stop() {
 	}
 	close(m.stopChan)
 	m.isRunning = false
+
+	if err := hid.Exit(); err != nil {
+		logger.Log.Error("hid.Exit failed", zap.Error(err))
+	}
 }
 
 func (m *ScannerManager) worker() {
@@ -62,16 +72,6 @@ func (m *ScannerManager) worker() {
 }
 
 func (m *ScannerManager) refresh() {
-	if err := hid.Init(); err != nil {
-		logger.Log.Error("hid.Init failed", zap.Error(err))
-		return
-	}
-	defer func() {
-		if err := hid.Exit(); err != nil {
-			logger.Log.Error("hid.Exit failed", zap.Error(err))
-		}
-	}()
-
 	topTarget, _ := filepath.EvalSymlinks("/dev/scanner_top")
 	bottomTarget, _ := filepath.EvalSymlinks("/dev/scanner_bottom")
 

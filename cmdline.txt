@@ -1,0 +1,3 @@
+# add to /boot/cmdline.txt or /boot/firmware/cmdline.txt
+
+usbcore.autosuspend=-1

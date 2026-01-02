@@ -135,11 +135,19 @@ func (w *QRWorker) readLoop(ctx context.Context, dev *hid.Device, path string, s
 		case <-ctx.Done():
 			return
 		default:
-			n, err := dev.Read(buf)
+			n, err := dev.ReadWithTimeout(buf, 1000)
 			if err != nil {
+				if n == 0 && err != nil {
+					continue
+				}
+
 				logger.Log.Warn("HID read error (device disconnected?)", zap.String("path", path), zap.Error(err))
 				return
 			}
+			if n == 0 {
+				continue
+			}
+
 			if n < 3 {
 				continue
 			}
